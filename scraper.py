@@ -176,10 +176,14 @@ def parse_item_list(flist):
         print(i, "=========================")
         if i == 0:
             print(i, p.prettify())
-        url, sold, price, mls = None, None, None, None
+        url, sold, price, mls, lis = None, None, None, None, None
         m = re.search('MLS:\s*([\d]+)', p.text)
         mls = m.group(1) if m else ''
-
+        data = p.find('div', class_='listview-photocontainer').find('div', class_='ratings-widget')
+        if data:
+            mls = data['data-listingnumber']
+            lid = data['data-listingid']
+        
         for price in p.select('.listview-price'):
             # print(price.prettify())
             url = price.find('a')['href']
@@ -188,7 +192,8 @@ def parse_item_list(flist):
             m = re.search('\$[\d,]+', price.text)
         prptList[url] = { 'sold': sold,
                           'price': m.group(0),
-                          'mls': mls}
+                          'mls': mls,
+                          'lid': lid}
     print(prptList)
 
     #print(d['lst'])
