@@ -1,5 +1,5 @@
 create table home (
-  lid integer PRIMARY KEY,
+  lid integer,
   lat float,
   lon float,
   url text,
