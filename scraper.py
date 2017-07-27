@@ -5,11 +5,13 @@ import sys
 import json
 from bs4 import BeautifulSoup
 import requests
+import time
 from datetime import datetime
+import random
 
 import requests
 
-def query_server(itemFirst, proxies):
+def query_server(itemFirst, proxies, maxprice='', rpp=40):
     
     cookies = {
         #'BrokerOffice_Session': 'SessionCookie=a67816d9-be96-4e7f-97e6-171bcb83980d',
@@ -68,6 +70,7 @@ def query_server(itemFirst, proxies):
     data = [
         ('Criteria/FilterByAddress', '1'),
         ('AutoAdjustMap', 'on'),
+        ('Criteria/MaxPrice', maxprice),
         ('Criteria/ListingTypeID', '1'),
         ('Criteria/PropertyTypeID', '0x000000000000000000000002'),
         #('Criteria/PropertyTypeID', '0x000000000000000000000004,0x000000000000001000000000'), # condo/Homeowner Assoc
@@ -90,11 +93,11 @@ def query_server(itemFirst, proxies):
         ('Criteria/SearchType', 'map'),
         ('SearchTab', 'mapsearch-criteria-basicsearch'),
         ('CLSID', '-1'),
-        ('ResultsPerPage', '20'), # default was 10
+        ('ResultsPerPage', rpp), # default was 10
     ]
     print(proxies)
     try:
-        r = requests.post('http://www.mlsli.com/Include/AJAX/MapSearch/GetListingPins.aspx', headers=headers, params=params, cookies=cookies, data=data, proxies=proxies)
+        r = requests.post('http://www.mlsli.com/Include/AJAX/MapSearch/GetListingPins.aspx', headers=headers, params=params, cookies=cookies, data=data, proxies=proxies, timeout=8)
         #r = requests.post('http://www.baidu.com/', proxies=proxies)
         return r
     except:
@@ -154,14 +157,40 @@ def get_item(url):
 #in case the reproduced version is not "correct".
 # requests.post('http://www.mlsli.com/Include/AJAX/MapSearch/GetListingPins.aspx?searchoverride=21a8d3df-61d2-4115-91da-10a9d216abe2&ts=1500917583692&', headers=headers, cookies=cookies, data=data)
 
-def scrape(proxies):
-    for i in range(20):
-        r = query_server(i*20, {'http': proxies[i].strip() })
-        with open('test_{:02d}.html'.format(i), 'wb') as f:
-            f.write(r.content)
-        continue
+def scrape(proxies, i = 0, maxprice = ''):
+    rpp = 40
+    while i < 20:
+        print("maxprice=", maxprice, " rpp=", rpp)
+        proxy = proxies[i % len(proxies)].split()[0].strip()
+        r = query_server(0, {'http': proxy }, maxprice, rpp)
+        try:
+            #with open('test_m{:02d}.html'.format(i), 'wb') as f:
+            #    f.write(r.content)
+            d = r.json()
+            if d['pageCount'] == 0:
+                break
+            prices = [v['ListPriceLow'] for v in d['ListingResultSet']['Items']]
+            if any([v > maxprice for v in prices]):
+                break
+            with open('test_m{:02d}.json'.format(i), 'w') as f:
+                f.write(json.dumps(d, indent=4))
+            print("{}: {} done".format(i, len(r.content) if r else 0))
+            i += 1
 
-        d = r.json()
+            maxprice = min(prices)
+            if d['pageCount'] < rpp:
+                maxprice -= 1
+
+            time.sleep(random.randrange(5, 10))
+        except:
+            proxies.pop(i)
+            print("proxy {} failed, avail. {}".format(proxy, len(proxies)))
+            with open('dead_proxies.txt', 'a') as f:
+                f.write("{}\n".format(proxy))
+            time.sleep(random.randrange(3,8))
+        if len(proxies) == 0:
+            print("No more proxies, quit")
+            break
 
 
 def parse_item_list(flist):
@@ -198,11 +227,14 @@ def parse_item_list(flist):
 
     #print(d['lst'])
 
-parse_item_list('test_03.html')
-sys.exit(0)
+# parse_item_list('test_03.html')
 
 with open('proxies.txt', 'r') as f:
     proxies = f.readlines()
+
+maxprice='199000'
+scrape(proxies, 15, maxprice)
+sys.exit(0)
 
 # time.sleep(5)
 #url = 'http://www.mlsli.com/homes-for-sale/Lot-13-Highview-Rd-Stony-Brook-NY-11790-195710143'

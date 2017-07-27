@@ -69,7 +69,7 @@ class ProxyPool:
         self.proxies.update(get_page('https://free-proxy-list.net/anonymous-proxy.html', 1, 'proxy_freelist.html', parse_freelist))
         with open('proxies.txt', 'w') as f:
             for k,v in self.proxies.items():
-                f.write("{}\n".format(k))
+                f.write("{} 0\n".format(k))
 
 
 
