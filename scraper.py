@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 
+import os
 import re
 import sys
 import json
@@ -8,10 +9,34 @@ import requests
 import time
 from datetime import datetime
 import random
+import operator
 
 import requests
 
-def query_server(itemFirst, proxies, maxprice='', rpp=40):
+import logging
+
+logging.basicConfig(format='%(levelname)s:%(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.DEBUG)
+
+def next_proxy(proxies, maxv = 4):
+    sorted_x = sorted(proxies.items(), key=operator.itemgetter(1))
+    for x in sorted_x:
+        if x[1] >= 0: return x[0]
+    return None
+
+
+def check_proxy(proxies):
+    try:
+        r = requests.get('http://www.google.com', proxies=proxies)
+    except:
+        return 'Dead'
+    r = requests.get('http://icanhazip.com', proxies=proxies)
+    print('Good', proxies, r.text, proxies['http'])
+    if r.text == proxies['http']:
+        return 'High'
+    return 'Transparent'
+
+
+def query_server(conf, proxies):
     
     cookies = {
         #'BrokerOffice_Session': 'SessionCookie=a67816d9-be96-4e7f-97e6-171bcb83980d',
@@ -70,7 +95,7 @@ def query_server(itemFirst, proxies, maxprice='', rpp=40):
     data = [
         ('Criteria/FilterByAddress', '1'),
         ('AutoAdjustMap', 'on'),
-        ('Criteria/MaxPrice', maxprice),
+        ('Criteria/MaxPrice', conf['MaxPrice']),
         ('Criteria/ListingTypeID', '1'),
         ('Criteria/PropertyTypeID', '0x000000000000000000000002'),
         #('Criteria/PropertyTypeID', '0x000000000000000000000004,0x000000000000001000000000'), # condo/Homeowner Assoc
@@ -89,21 +114,20 @@ def query_server(itemFirst, proxies, maxprice='', rpp=40):
         ('IgnoreMap', 'true'),
         ('ListingSortID', '6'),
         ('view', 'list'),
-         ('first', itemFirst),
+         ('first', conf['itemFirst']),
         ('Criteria/SearchType', 'map'),
         ('SearchTab', 'mapsearch-criteria-basicsearch'),
         ('CLSID', '-1'),
-        ('ResultsPerPage', rpp), # default was 10
+        ('ResultsPerPage', conf['ResultsPerPage']), # default was 10
     ]
     print(proxies)
     try:
         r = requests.post('http://www.mlsli.com/Include/AJAX/MapSearch/GetListingPins.aspx', headers=headers, params=params, cookies=cookies, data=data, proxies=proxies, timeout=8)
-        #r = requests.post('http://www.baidu.com/', proxies=proxies)
         return r
     except:
         return None
 
-def get_item(url):
+def get_item(url, proxies):
     cookies = {
         #'BrokerOffice_Session': 'SessionCookie=a67816d9-be96-4e7f-97e6-171bcb83980d',
         #'_ga': 'GA1.2.236589968.1498249286',
@@ -147,9 +171,12 @@ def get_item(url):
         'Connection': 'keep-alive',
         'Upgrade-Insecure-Requests': '1',
     }
-    proxies = { 'http': '206.127.88.18:80' }
-    r = requests.get(url, headers=headers, cookies=cookies, proxies=proxies)
-    return r
+    # proxies = { 'http': '206.127.88.18:80' }
+    try:
+        r = requests.get(url, headers=headers, cookies=cookies, proxies=proxies, timeout=8)
+        return r
+    except:
+        return None
 
 
 #NB. Original query string below. It seems impossible to parse and
@@ -157,37 +184,52 @@ def get_item(url):
 #in case the reproduced version is not "correct".
 # requests.post('http://www.mlsli.com/Include/AJAX/MapSearch/GetListingPins.aspx?searchoverride=21a8d3df-61d2-4115-91da-10a9d216abe2&ts=1500917583692&', headers=headers, cookies=cookies, data=data)
 
-def scrape(proxies, i = 0, maxprice = ''):
-    rpp = 40
-    while i < 20:
-        print("maxprice=", maxprice, " rpp=", rpp)
-        proxy = proxies[i % len(proxies)].split()[0].strip()
-        r = query_server(0, {'http': proxy }, maxprice, rpp)
+def scrape_list(conf, proxies):
+    dllist = []
+    while len(dllist) < 20:
+        i = len(dllist)
+        ts = datetime.now().strftime("%Y%m%d/list_%H%M%S")
+        print(conf)
+        if conf['MaxPrice'] < 10000:
+            print("skip the low price")
+            break
+        proxy = proxies[i % len(proxies)]
+        r = query_server(conf, {'http': proxy })
+        if r:
+            with open('data/{}.html'.format(ts), 'wb') as f:
+                f.write(r.content)
+
         try:
-            #with open('test_m{:02d}.html'.format(i), 'wb') as f:
-            #    f.write(r.content)
             d = r.json()
-            if d['pageCount'] == 0:
-                break
-            prices = [v['ListPriceLow'] for v in d['ListingResultSet']['Items']]
-            if any([v > maxprice for v in prices]):
-                break
-            with open('test_m{:02d}.json'.format(i), 'w') as f:
-                f.write(json.dumps(d, indent=4))
-            print("{}: {} done".format(i, len(r.content) if r else 0))
-            i += 1
-
-            maxprice = min(prices)
-            if d['pageCount'] < rpp:
-                maxprice -= 1
-
-            time.sleep(random.randrange(5, 10))
         except:
             proxies.pop(i)
             print("proxy {} failed, avail. {}".format(proxy, len(proxies)))
             with open('dead_proxies.txt', 'a') as f:
                 f.write("{}\n".format(proxy))
             time.sleep(random.randrange(3,8))
+            continue
+
+        if d['pageCount'] == 0:
+            break
+        prices = [v['ListPriceLow'] for v in d['ListingResultSet']['Items']]
+        print(prices)
+        logging.debug("all prices: {} {}".format(min(prices), max(prices)))
+        if any([v > conf['MaxPrice'] for v in prices]):
+            logging.warning("found a price > MaxPrice({})".format(conf['MaxPrice']))
+            # break
+        with open('data/{}.json'.format(ts), 'w') as f:
+            f.write(json.dumps(d, indent=4))
+        print("{}: {} done".format(i, len(r.content) if r else 0))
+        i += 1
+
+        conf['MaxPrice'] = min(prices)
+        if d['pageCount'] < conf['ResultsPerPage']:
+            logging.warning("expecting {}, but got {}, end of search".format(conf['ResultsPerPage'], d['pageCount']))
+            break
+            conf['MaxPrice'] -= 1
+
+        time.sleep(random.randrange(5, 10))
+
         if len(proxies) == 0:
             print("No more proxies, quit")
             break
@@ -227,13 +269,96 @@ def parse_item_list(flist):
 
     #print(d['lst'])
 
+def scrape_item(conf, url, datadir, proxies, wait=12, cutoff = 10000):
+    fpage = '{}/index.html'.format(datadir)
+    if os.path.exists(fpage) and os.path.getsize(fpage) > cutoff:
+        logging.info("downloaded before, skip {}".format(fpage))
+        return fpage
+
+    dllist = []
+    while True:
+        print(conf)
+        proxy = next_proxy(proxies) #
+        if not proxy:
+            logging.error("can not find valid proxy")
+            return None
+
+        logging.info("proxy {} usage: {}".format(proxy, proxies[proxy]))
+        r = get_item(url, {'http': proxy })
+        if r and len(r.text) > cutoff:
+            with open(fpage, 'wb') as f:
+                f.write(r.content)
+            logging.info("downloaded {} into {}".format(len(r.content), fpage))
+            proxies[proxy] += 1
+            logging.debug("marking {} = {}".format(proxy, proxies[proxy]))
+            time.sleep(wait)
+            break
+        else:
+            if proxies[proxy] == 0:
+                with open('dead_proxies.txt', 'a') as f:
+                    f.write("{}\n".format(proxy))
+            proxies[proxy] = -1
+            logging.debug("proxy: {} failed avail. {}".format(proxy, len(proxies)))
+    return fpage
+           
+
+
 # parse_item_list('test_03.html')
 
-with open('proxies.txt', 'r') as f:
-    proxies = f.readlines()
+with open('dead_proxies.txt', 'r') as f:
+    dead = [v.strip() for v in f.readlines()]
 
-maxprice='199000'
-scrape(proxies, 15, maxprice)
+with open('proxies.txt', 'r') as f:
+    proxies = [v.strip() for v in f.readlines() if v.strip() not in dead]
+
+with open('proxies.txt', 'w') as f:
+    f.write("\n".join(proxies))
+
+good_proxies = []
+for v in proxies:
+    if v in dead: continue
+    #if check_proxy({'http': v}) in ['High', 'Transparent']:
+    #    good_proxies.append(v)
+    #else:
+    #    with open('dead_proxies.txt', 'a') as f:
+    #        f.write("{}\n".format(v))
+    good_proxies.append(v)
+
+
+print("found {} proxies".format(len(good_proxies)))
+
+proxies = dict([(v, 0) for v in good_proxies])
+
+if not proxies:
+    raise RuntimeError("no proxies found")
+
+conf = json.load(open('conf.json', 'r'))
+print(json.dumps(conf, indent=4))
+
+# scrape_list(conf, proxies)
+with open('items.txt', 'r') as f:
+    for url in f.readlines():
+        fdir = url.split('/')[-1].strip()
+        m = re.search("(\d+)-(\d+)$", url)
+        zipcode, lid = m.group(1), m.group(2)
+        datadir = 'data/z{}/{}'.format(zipcode, fdir)
+        os.makedirs(datadir, exist_ok=True)
+        #oldidx = 'data/z{}/{}/index.html'.format(zipcode, lid)
+        #if os.path.exists(oldidx):
+        #    os.rename(oldidx, '{}/index.html'.format(datadir))
+        #    os.rmdir('data/z{}/{}'.format(zipcode, lid))
+
+        item = scrape_item(conf, 'http://www.mlsli.com' + url.strip(), datadir, proxies)
+        if not item:
+            break
+    for k,v in proxies.items():
+        print(k, v)
+
+
+#os.rename('conf.json', 'conf.json.bak')
+#with open('conf.json', 'w') as output:
+#    json.dump(conf, output)
+
 sys.exit(0)
 
 # time.sleep(5)
