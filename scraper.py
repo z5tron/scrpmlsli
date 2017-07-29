@@ -188,88 +188,61 @@ def scrape_list(conf, proxies):
     dllist = []
     while len(dllist) < 20:
         i = len(dllist)
-        ts = datetime.now().strftime("%Y%m%d/list_%H%M%S")
+        prefix = os.path.join('data', 'list', datetime.now().strftime("%Y%m%d_%H%M%S"))
         print(conf)
         if conf['MaxPrice'] < 10000:
             print("skip the low price")
             break
-        proxy = proxies[i % len(proxies)]
+        proxy = next_proxy(proxies)
         r = query_server(conf, {'http': proxy })
-        if r:
-            with open('data/{}.html'.format(ts), 'wb') as f:
-                f.write(r.content)
+        if r is None: # invalid proxy
+            proxies[proxy] = -1
+            continue
+
+        with open('{}.html'.format(prefix), 'wb') as f:
+            f.write(r.content)
 
         try:
             d = r.json()
         except:
-            proxies.pop(i)
+            # proxy is blocked
+            proxies[proxy] += 1
             print("proxy {} failed, avail. {}".format(proxy, len(proxies)))
             with open('dead_proxies.txt', 'a') as f:
                 f.write("{}\n".format(proxy))
-            time.sleep(random.randrange(3,8))
+            time.sleep(random.randrange(2,4))
             continue
 
         if d['pageCount'] == 0:
+            logging.warning("pageCount is {}, break".format(d['pageCount']))
             break
         prices = [v['ListPriceLow'] for v in d['ListingResultSet']['Items']]
-        print(prices)
+        logging.debug("prices: {}".format(str(prices)))
         logging.debug("all prices: {} {}".format(min(prices), max(prices)))
         if any([v > conf['MaxPrice'] for v in prices]):
             logging.warning("found a price > MaxPrice({})".format(conf['MaxPrice']))
-            # break
-        with open('data/{}.json'.format(ts), 'w') as f:
+
+        with open('{}.json'.format(prefix), 'w') as f:
             f.write(json.dumps(d, indent=4))
         print("{}: {} done".format(i, len(r.content) if r else 0))
         i += 1
 
         conf['MaxPrice'] = min(prices)
         if d['pageCount'] < conf['ResultsPerPage']:
-            logging.warning("expecting {}, but got {}, end of search".format(conf['ResultsPerPage'], d['pageCount']))
+            logging.debug("{}/{} not filled up, end of search".format(d['pageCount'], conf['ResultsPerPage']))
             break
-            conf['MaxPrice'] -= 1
-
-        time.sleep(random.randrange(5, 10))
 
         if len(proxies) == 0:
             print("No more proxies, quit")
             break
 
+        if next_proxy(proxies) == proxy:
+            time.sleep(random.randrange(5, 10))
 
-def parse_item_list(flist):
-    # its a JSON format
-    with open(flist, 'r') as f:
-        d = json.loads(f.read())
-        json.dumps(d, indent=4)
 
-    soup = BeautifulSoup(d['listingsHtml'], 'html.parser')
-    prptList = {}
-    for i,p in enumerate(soup.find_all('div', 'listview-result')):
-        print(i, "=========================")
-        if i == 0:
-            print(i, p.prettify())
-        url, sold, price, mls, lis = None, None, None, None, None
-        m = re.search('MLS:\s*([\d]+)', p.text)
-        mls = m.group(1) if m else ''
-        data = p.find('div', class_='listview-photocontainer').find('div', class_='ratings-widget')
-        if data:
-            mls = data['data-listingnumber']
-            lid = data['data-listingid']
-        
-        for price in p.select('.listview-price'):
-            # print(price.prettify())
-            url = price.find('a')['href']
-            m = re.search('(Sold|Active)', price.text)
-            sold = True if m else False # : print(m.group(0), end=', ')
-            m = re.search('\$[\d,]+', price.text)
-        prptList[url] = { 'sold': sold,
-                          'price': m.group(0),
-                          'mls': mls,
-                          'lid': lid}
-    print(prptList)
 
-    #print(d['lst'])
 
-def scrape_item(conf, url, datadir, proxies, wait=12, cutoff = 10000):
+def scrape_item(conf, url, datadir, proxies, wait=5, cutoff = 10000):
     fpage = '{}/index.html'.format(datadir)
     if os.path.exists(fpage) and os.path.getsize(fpage) > cutoff:
         logging.info("downloaded before, skip {}".format(fpage))
@@ -291,8 +264,10 @@ def scrape_item(conf, url, datadir, proxies, wait=12, cutoff = 10000):
             logging.info("downloaded {} into {}".format(len(r.content), fpage))
             proxies[proxy] += 1
             logging.debug("marking {} = {}".format(proxy, proxies[proxy]))
-            time.sleep(wait)
+            time.sleep(random.randrange(3, wait))
             break
+        elif not r:
+            proxies[proxy] = -1
         else:
             if proxies[proxy] == 0:
                 with open('dead_proxies.txt', 'a') as f:
@@ -301,58 +276,43 @@ def scrape_item(conf, url, datadir, proxies, wait=12, cutoff = 10000):
             logging.debug("proxy: {} failed avail. {}".format(proxy, len(proxies)))
     return fpage
            
-
-
 # parse_item_list('test_03.html')
 
 with open('dead_proxies.txt', 'r') as f:
     dead = [v.strip() for v in f.readlines()]
 
 with open('proxies.txt', 'r') as f:
-    proxies = [v.strip() for v in f.readlines() if v.strip() not in dead]
-
-with open('proxies.txt', 'w') as f:
-    f.write("\n".join(proxies))
-
-good_proxies = []
-for v in proxies:
-    if v in dead: continue
-    #if check_proxy({'http': v}) in ['High', 'Transparent']:
-    #    good_proxies.append(v)
-    #else:
-    #    with open('dead_proxies.txt', 'a') as f:
-    #        f.write("{}\n".format(v))
-    good_proxies.append(v)
-
-
-print("found {} proxies".format(len(good_proxies)))
-
-proxies = dict([(v, 0) for v in good_proxies])
+    proxies = dict([(v.strip(), 0) for v in f.readlines() if v.strip() not in dead])
 
 if not proxies:
     raise RuntimeError("no proxies found")
 
+logging.info("writting {} good proxies".format(len(proxies)))
+with open('proxies.txt', 'w') as f:
+    f.write("\n".join(proxies.keys()))
+
 conf = json.load(open('conf.json', 'r'))
 print(json.dumps(conf, indent=4))
 
-# scrape_list(conf, proxies)
-with open('items.txt', 'r') as f:
-    for url in f.readlines():
-        fdir = url.split('/')[-1].strip()
-        m = re.search("(\d+)-(\d+)$", url)
-        zipcode, lid = m.group(1), m.group(2)
-        datadir = 'data/z{}/{}'.format(zipcode, fdir)
-        os.makedirs(datadir, exist_ok=True)
-        #oldidx = 'data/z{}/{}/index.html'.format(zipcode, lid)
-        #if os.path.exists(oldidx):
-        #    os.rename(oldidx, '{}/index.html'.format(datadir))
-        #    os.rmdir('data/z{}/{}'.format(zipcode, lid))
+scrape_list(conf, proxies)
 
-        item = scrape_item(conf, 'http://www.mlsli.com' + url.strip(), datadir, proxies)
-        if not item:
-            break
-    for k,v in proxies.items():
-        print(k, v)
+#with open('items.txt', 'r') as f:
+#    for url in f.readlines():
+#        fdir = url.split('/')[-1].strip()
+#        m = re.search("(\d+)-(\d+)$", url)
+#        zipcode, lid = m.group(1), m.group(2)
+#        datadir = 'data/z{}/{}'.format(zipcode, fdir)
+#        os.makedirs(datadir, exist_ok=True)
+#        oldidx = 'data/{}__index.html'.format(fdir)
+#        if os.path.exists(oldidx):
+#            os.rename(oldidx, '{}/index.html'.format(datadir))
+#        #    os.rmdir('data/z{}/{}'.format(zipcode, lid))
+
+#        #item = scrape_item(conf, 'http://www.mlsli.com' + url.strip(), datadir, proxies)
+#        #if not item:
+#        #    break
+#    #for k,v in proxies.items():
+#    #    print(k, v)
 
 
 #os.rename('conf.json', 'conf.json.bak')
